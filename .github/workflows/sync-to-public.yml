@@ -1,0 +1,73 @@
+name: Sync to Public Repository
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout private repo
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: Check if sync should be skipped
+      id: check-skip
+      run: |
+        # Check if latest commit message contains skip marker
+        if git log -1 --pretty=format:"%s %b" | grep -q "\[private\]"; then
+          echo "skip=true" >> $GITHUB_OUTPUT
+          echo "Skipping sync - commit marked as private-only"
+        else
+          echo "skip=false" >> $GITHUB_OUTPUT
+          echo "Proceeding with sync"
+        fi
+        
+    - name: Setup Git
+      if: steps.check-skip.outputs.skip == 'false'
+      run: |
+        git config --global user.name 'Sean Greenhalgh'
+        git config --global user.email 'me@seangreenhalgh.com'
+        
+    - name: Clone public repository
+      if: steps.check-skip.outputs.skip == 'false'
+      run: |
+        git clone https://x-access-token:${{ secrets.PUBLIC_REPO_TOKEN }}@github.com/${{ secrets.PUBLIC_REPO_OWNER }}/heyzine-dl.git public-repo
+        
+    - name: Sync files to public repo
+      if: steps.check-skip.outputs.skip == 'false'
+      run: |
+        # Get the latest commit message from private repo (full message including body)
+        COMMIT_SUBJECT=$(git log -1 --pretty=format:"%s")
+        COMMIT_BODY=$(git log -1 --pretty=format:"%b")
+        COMMIT_AUTHOR=$(git log -1 --pretty=format:"%an")
+        COMMIT_DATE=$(git log -1 --pretty=format:"%ci")
+        
+        # Copy files we want to make public
+        cp heyzine_dl.py public-repo/
+        cp pyproject.toml public-repo/
+        cp requirements.txt public-repo/
+        cp uv.lock public-repo/
+        cp README.md public-repo/
+        cp LICENSE public-repo/ 2>/dev/null || true
+        
+        # Copy .gitignore but remove private file exclusions
+        sed '/# Private development files/,$d' .gitignore > public-repo/.gitignore
+        
+        cd public-repo
+        git add -A
+        
+        # Only commit if there are changes
+        if ! git diff --cached --quiet; then
+          if [ -n "$COMMIT_BODY" ]; then
+            git commit -m "$COMMIT_SUBJECT" -m "$COMMIT_BODY"
+          else
+            git commit -m "$COMMIT_SUBJECT"
+          fi
+          git push
+        else
+          echo "No changes to sync"
+        fi
